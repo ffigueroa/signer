@@ -109,6 +109,21 @@ class Signer
     node
   end
 
+  def signed_sii_info_node
+    node = signature_node.at_xpath('ds:SignedInfo', ds: 'http://www.w3.org/2000/09/xmldsig#')
+    unless node
+      node = Nokogiri::XML::Node.new('SignedInfo', document)
+      signature_node.add_child(node)
+      canonicalization_method_node = Nokogiri::XML::Node.new('CanonicalizationMethod', document)
+      canonicalization_method_node['Algorithm'] = 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315'
+      node.add_child(canonicalization_method_node)
+      signature_method_node = Nokogiri::XML::Node.new('SignatureMethod', document)
+      signature_method_node['Algorithm'] = self.signature_algorithm_id
+      node.add_child(signature_method_node)
+    end
+    node
+  end
+
   # <o:BinarySecurityToken u:Id="" ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3" EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">
   #   ...
   # </o:BinarySecurityToken>
@@ -171,6 +186,43 @@ class Signer
     data_node.add_child(cetificate_node)
 
     key_info_node      = Nokogiri::XML::Node.new('KeyInfo', document)
+    key_info_node.add_child(data_node)
+
+    signed_info_node.add_next_sibling(key_info_node)
+
+    data_node
+  end
+
+  def x509_sii_node
+ 
+
+    cetificate_node    = Nokogiri::XML::Node.new('X509Certificate', document)
+    cetificate_node.content = Base64.encode64(cert.to_der).gsub("\n", '')
+
+    data_node          = Nokogiri::XML::Node.new('X509Data', document)
+    data_node.add_child(cetificate_node)
+
+
+
+
+    exponent         = Nokogiri::XML::Node.new('Exponent', document)
+    pkeye = cert.public_key.e
+    exponent.content = pkeye
+
+
+    modulus       = Nokogiri::XML::Node.new('Modulus', document)
+    pkeyn = cert.public_key.n
+    modulus.content = pkeyn
+
+    rsakeyvalue         = Nokogiri::XML::Node.new('RSAKeyValue', document)
+    rsakeyvalue.add_child(modulus)
+    rsakeyvalue.add_child(exponent)
+
+    key_value         = Nokogiri::XML::Node.new('KeyValue', document)
+    key_value.add_child(rsakeyvalue)
+
+    key_info_node      = Nokogiri::XML::Node.new('KeyInfo', document)
+    key_info_node.add_child(key_value)
     key_info_node.add_child(data_node)
 
     signed_info_node.add_next_sibling(key_info_node)
@@ -259,6 +311,12 @@ class Signer
     if options[:issuer_serial]
       x509_data_node
     end
+
+    if options[:sii]
+      x509_sii_node
+    end
+
+
 
     if options[:inclusive_namespaces]
       c14n_method_node = signed_info_node.at_xpath('ds:CanonicalizationMethod', ds: 'http://www.w3.org/2000/09/xmldsig#')
