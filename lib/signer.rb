@@ -73,7 +73,8 @@ class Signer
   end
 
   def canonicalize(node = document, inclusive_namespaces=nil)
-    node.canonicalize(Nokogiri::XML::XML_C14N_EXCLUSIVE_1_0, inclusive_namespaces, nil) # The last argument should be exactly +nil+ to remove comments from result
+    # node.canonicalize(Nokogiri::XML::XML_C14N_EXCLUSIVE_1_0, inclusive_namespaces, nil) # The last argument should be exactly +nil+ to remove comments from result
+    node.canonicalize(Nokogiri::XML::XML_C14N_1_0, inclusive_namespaces, nil)
   end
 
   # <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
@@ -195,9 +196,13 @@ class Signer
 
   def x509_sii_node
  
+    # Para obtener el modulo y exponente del certificado
+    pubkey = cert.public_key
 
     cetificate_node    = Nokogiri::XML::Node.new('X509Certificate', document)
-    cetificate_node.content = Base64.encode64(cert.to_der).gsub("\n", '')
+    x509cert = Base64.encode64(cert.to_der).gsub("\n", '')
+    
+    cetificate_node.content = "\n" << x509cert.scan(/.{1,76}/).join("\n") << "\n"
 
     data_node          = Nokogiri::XML::Node.new('X509Data', document)
     data_node.add_child(cetificate_node)
@@ -206,13 +211,27 @@ class Signer
 
 
     exponent         = Nokogiri::XML::Node.new('Exponent', document)
-    pkeye = cert.public_key.e
-    exponent.content = pkeye
+    # Inicio un arreglo en exp
+    exp = []
+    pubkey.e
+    (pubkey.e.num_bytes-1).downto(0) {|i| exp << ((pubkey.e >> (i*8)).to_i & 0xFF) }
+    exp
+    tmp = []
+    tmp[0] = exp.map {|b| sprintf("%02x" % b) }.join
+    expfinal = Base64.encode64(tmp.pack('H*')).split("\n").join
+    exponent.content = expfinal
 
 
     modulus       = Nokogiri::XML::Node.new('Modulus', document)
-    pkeyn = cert.public_key.n
-    modulus.content = pkeyn
+    mod = []
+    (pubkey.n.num_bytes-1).downto(0) { |i| mod << ((pubkey.n >> (i*8)).to_i & 0xFF) }
+    mod
+    tmp = []
+    tmp[0] = mod.map {|b| sprintf("%02x" % b) }.join
+    modulusfinal = Base64.encode64(tmp.pack('H*')).split("\n").join
+
+
+    modulus.content = "\n" << modulusfinal.scan(/.{1,76}/).join("\n") << "\n"
 
     rsakeyvalue         = Nokogiri::XML::Node.new('RSAKeyValue', document)
     rsakeyvalue.add_child(modulus)
@@ -225,7 +244,7 @@ class Signer
     key_info_node.add_child(key_value)
     key_info_node.add_child(data_node)
 
-    signed_info_node.add_next_sibling(key_info_node)
+    signed_sii_info_node.add_next_sibling(key_info_node)
 
     data_node
   end
@@ -253,34 +272,64 @@ class Signer
 
   def digest!(target_node, options = {})
     wsu_ns = namespace_prefix(target_node, WSU_NAMESPACE)
-    current_id = target_node["#{wsu_ns}:Id"]  if wsu_ns
-    id = options[:id] || current_id || "_#{Digest::SHA1.hexdigest(target_node.to_s)}"
-    if id.to_s.size > 0
-      wsu_ns ||= namespace_prefix(target_node, WSU_NAMESPACE, 'wsu')
-      target_node["#{wsu_ns}:Id"] = id.to_s
+    
+    if options[:sii]
+      current_id = target_node["#{wsu_ns}ID"]  if wsu_ns
+    else
+      current_id = target_node["#{wsu_ns}:Id"]  if wsu_ns
     end
+
+    id = options[:id] || current_id || "_#{Digest::SHA1.hexdigest(target_node.to_s)}"
+    
+    if id.to_s.size > 0
+      if options[:sii] 
+        wsu_ns ||= namespace_prefix(target_node, nil, nil)
+        target_node["#{wsu_ns}ID"] = id.to_s
+      else
+        wsu_ns ||= namespace_prefix(target_node, WSU_NAMESPACE, 'wsu')
+        target_node["#{wsu_ns}:Id"] = id.to_s
+      end
+    end
+
+
     target_canon = canonicalize(target_node, options[:inclusive_namespaces])
     target_digest = Base64.encode64(@digester.digest(target_canon)).strip
 
+
     reference_node = Nokogiri::XML::Node.new('Reference', document)
     reference_node['URI'] = id.to_s.size > 0 ? "##{id}" : ""
-    signed_info_node.add_child(reference_node)
+  
+    if options[:sii]
+      signed_sii_info_node.add_child(reference_node)
+    else
+      signed_sii_info_node.add_child(reference_node)
+    end
 
     transforms_node = Nokogiri::XML::Node.new('Transforms', document)
-    reference_node.add_child(transforms_node)
+    
+
+    # Si la opción :sii es true no incluyo el nodo transforms
+    unless options[:sii]
+      reference_node.add_child(transforms_node)
+    end
 
     transform_node = Nokogiri::XML::Node.new('Transform', document)
+
+
     if options[:enveloped]
       transform_node['Algorithm'] = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
     else
       transform_node['Algorithm'] = 'http://www.w3.org/2001/10/xml-exc-c14n#'
     end
+
+
     if options[:inclusive_namespaces]
       inclusive_namespaces_node = Nokogiri::XML::Node.new('ec:InclusiveNamespaces', document)
       inclusive_namespaces_node.add_namespace_definition('ec', transform_node['Algorithm'])
       inclusive_namespaces_node['PrefixList'] = options[:inclusive_namespaces].join(' ')
       transform_node.add_child(inclusive_namespaces_node)
     end
+
     transforms_node.add_child(transform_node)
 
     digest_method_node = Nokogiri::XML::Node.new('DigestMethod', document)
@@ -316,8 +365,6 @@ class Signer
       x509_sii_node
     end
 
-
-
     if options[:inclusive_namespaces]
       c14n_method_node = signed_info_node.at_xpath('ds:CanonicalizationMethod', ds: 'http://www.w3.org/2000/09/xmldsig#')
       inclusive_namespaces_node = Nokogiri::XML::Node.new('ec:InclusiveNamespaces', document)
@@ -332,8 +379,16 @@ class Signer
     signature_value_digest = Base64.encode64(signature).gsub("\n", '')
 
     signature_value_node = Nokogiri::XML::Node.new('SignatureValue', document)
-    signature_value_node.content = signature_value_digest
-    signed_info_node.add_next_sibling(signature_value_node)
+    
+    if options[:sii]
+      signature_value_node.content = "\n" << signature_value_digest.scan(/.{1,76}/).join("\n") << "\n"
+      signed_sii_info_node.add_next_sibling(signature_value_node)
+    else
+      signature_value_node.content = signature_value_digest
+      signed_info_node.add_next_sibling(signature_value_node)
+    end
+ 
+   
     self
   end
 
