@@ -202,7 +202,7 @@ class Signer
     cetificate_node    = Nokogiri::XML::Node.new('X509Certificate', document)
     x509cert = Base64.encode64(cert.to_der).gsub("\n", '')
     
-    cetificate_node.content = "\n" << x509cert.scan(/.{1,76}/).join("\n") << "\n"
+    cetificate_node.content = x509cert.scan(/.{1,76}/).join("\n")
 
     data_node          = Nokogiri::XML::Node.new('X509Data', document)
     data_node.add_child(cetificate_node)
@@ -308,15 +308,16 @@ class Signer
     transforms_node = Nokogiri::XML::Node.new('Transforms', document)
     
 
-    # Si la opción :sii es true no incluyo el nodo transforms
-    unless options[:sii]
-      reference_node.add_child(transforms_node)
-    end
+    
+    
+    reference_node.add_child(transforms_node)
+  
 
     transform_node = Nokogiri::XML::Node.new('Transform', document)
 
-
-    if options[:enveloped]
+    if options[:sii]
+      transform_node['Algorithm'] = 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315'
+    elsif options[:enveloped]
       transform_node['Algorithm'] = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
     else
       transform_node['Algorithm'] = 'http://www.w3.org/2001/10/xml-exc-c14n#'
@@ -381,7 +382,7 @@ class Signer
     signature_value_node = Nokogiri::XML::Node.new('SignatureValue', document)
     
     if options[:sii]
-      signature_value_node.content = "\n" << signature_value_digest.scan(/.{1,76}/).join("\n") << "\n"
+      signature_value_node.content = signature_value_digest.scan(/.{1,76}/).join("\n")
       signed_sii_info_node.add_next_sibling(signature_value_node)
     else
       signature_value_node.content = signature_value_digest
